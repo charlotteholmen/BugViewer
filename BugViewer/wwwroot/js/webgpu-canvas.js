@@ -1083,6 +1083,12 @@ export async function addMesh(meshData) {
     });
 }
 
+export function addMeshes(meshArray) {
+    for (const mesh of meshArray) {
+        addMesh(mesh);
+    }
+}
+
 export function removeMesh(index) {
     const mesh = meshes[index];
     if (!mesh) return;

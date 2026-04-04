@@ -735,7 +735,7 @@ namespace BugViewer
         {
             // Apply any parameter proxy values to Options
             ApplyParameterProxiesToOptions();
-            
+
             await SendOptionsToJavaScriptAsync(false);
         }
 
@@ -896,6 +896,12 @@ namespace BugViewer
         // Resets the camera to its initial position.
         public void ResetCamera()
         {
+            //if (float.IsNaN(BoundingSphere.RadiusSquared) ||
+            //    float.IsNaN(BoundingSphere.Center.X) ||
+            //    float.IsNaN(BoundingSphere.Center.Y) ||
+            //    float.IsNaN(BoundingSphere.Center.Z))
+            //    return;
+                //BoundingSphere = new Sphere(Vector3.Zero, 1f);
             Camera.Reset(BoundingSphere);
             _module?.InvokeVoidAsync("writeViewMatrix", Camera.ConvertMatrixToJavaScript());
         }
@@ -979,6 +985,8 @@ namespace BugViewer
         private bool UpdateSpheresAdd(AbstractObject3D obj3D)
         {
             var sphere = MinimumSphere.Run(obj3D.Vertices);
+            if (float.IsNaN(sphere.RadiusSquared))
+                ;
             objectSpheres[obj3D] = sphere;
             var need = !Sphere.AContainsB(BoundingSphere, sphere);
 
@@ -1021,7 +1029,7 @@ namespace BugViewer
         public async Task AddMeshAsync(MeshData mesh)
         {
             var index = -1;
-            var nameInSent = sentMeshIds?.TryGetValue(mesh.Id, out index);
+            bool? nameInSent = sentMeshIds?.TryGetValue(mesh.Id, out index);
             if (nameInSent.GetValueOrDefault(false))
             {
                 var former = meshes[index];
@@ -1035,6 +1043,51 @@ namespace BugViewer
                 return;
 
             UpdateViewer(UpdateSpheresAdd(mesh));
+            DefineMeshLookups(mesh);
+            await _module.InvokeVoidAsync("addMesh", mesh.CreateJavascriptData());
+            sentMeshIds[mesh.Id] = meshes.Count - 1;
+        }
+
+        // Adds multiple meshes to the scene in a single JS interop call.
+        public async Task AddMeshesAsync(IEnumerable<MeshData> newMeshes)
+        {
+            var meshList = newMeshes as IList<MeshData> ?? newMeshes.ToList();
+            if (meshList.Count == 0) return;
+            var initMeshCount = meshes.Count;
+            var sphereChanged = false;
+            foreach (var mesh in meshList)
+            {
+                var index = -1;
+                var nameInSent = sentMeshIds?.TryGetValue(mesh.Id, out index);
+                if (nameInSent.GetValueOrDefault(false))
+                {
+                    var former = meshes[index];
+                    if (mesh.GetHashCode() == former.GetHashCode())
+                        continue;
+                    await RemoveMeshAsync(index);
+                }
+                meshes.Add(mesh);
+                DefineMeshLookups(mesh);
+                if (UpdateSpheresAdd(mesh))
+                    sphereChanged = true;
+            }
+
+            // If module not ready yet, meshes are queued and will be sent from OnWebGpuReady.
+            if (_module is null || !_ready)
+                return;
+
+            UpdateViewer(sphereChanged);
+            // Precompute ray-cast data for all new meshes
+            for(var i = initMeshCount; i < meshes.Count; i++)
+                sentMeshIds[meshes[i].Id] = i;
+
+            // Single JS interop call with all mesh data
+            var jsDataArray = meshList.Select(m => m.CreateJavascriptData()).ToArray();
+            await _module.InvokeVoidAsync("addMeshes", (object)jsDataArray);
+        }
+
+        private void DefineMeshLookups(MeshData mesh)
+        {
             for (int i = 0; i < mesh.Indices.Count; i++)
             {
                 var tri = mesh.Indices[i];
@@ -1061,8 +1114,6 @@ namespace BugViewer
                 uBarycentricMultipliers.Add(uBaryMultiplier);
                 vBarycentricMultipliers.Add(vBaryMultiplier);
             }
-            await _module.InvokeVoidAsync("addMesh", mesh.CreateJavascriptData());
-            sentMeshIds[mesh.Id] = meshes.Count - 1;
         }
 
         // Adds lines to the scene.
